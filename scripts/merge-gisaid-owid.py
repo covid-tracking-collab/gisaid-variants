@@ -230,7 +230,7 @@ def main(args_list=None):
     # only output dates up until the latest GISAID available (collection dates will lag a few days)
     max_gisaid_date = gisaid_country_variants_df.collect_date.max()
     merged_pivoted_df_latest = merged_pivoted_df.loc[merged_pivoted_df.owid_date <= max_gisaid_date]
-    merged_pivoted_df_latest.to_csv(args.merged_gisaid_owid_out)
+    merged_pivoted_df_latest.to_csv(args.merged_gisaid_owid_out, index=False)
     print('Wrote output to %s' % args.merged_gisaid_owid_out)
 
 
