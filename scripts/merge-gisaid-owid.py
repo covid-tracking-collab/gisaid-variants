@@ -7,14 +7,17 @@ These are the rules we're using to filter GISAID sequences:
     - collection date must not be in the future and must be at the granularity of year/month/day,
       earliest Dec 2019
     - excluding sequences from the Nextstrain exclude list
-    - excluding sequences with greater than 5% ambiguous base calls (N)
     - only human samples
+
+Filters for future consideration (not doing these yet):
+    - excluding sequences with greater than 5% ambiguous base calls (N)
 """
 
-from datetime import date, datetime
+from datetime import date
 import sys
 
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
+import numpy as np
 import pandas as pd
 import requests
 
@@ -57,7 +60,6 @@ def filter_gisaid_sequences(gisaid_df):
     - collection date must not be in the future and must be at the granularity of year/month/day,
       earliest Dec 2019
     - excluding sequences from the Nextstrain exclude list
-    - excluding sequences with greater than 5% ambiguous base calls (N)
     - only human samples
     """
     today_str = date.today().strftime('%Y-%m-%d')
@@ -71,7 +73,7 @@ def filter_gisaid_sequences(gisaid_df):
     gisaid_df = gisaid_df.loc[
         (gisaid_df['Sequence length'] > 20000) &
         (gisaid_df['Collection date'] < today_str) &
-        (gisaid_df['N-Content'] < 0.05) &
+        # (gisaid_df['N-Content'] < 0.05) &
         (gisaid_df['Host'] == 'Human')
     ]
 
@@ -146,11 +148,16 @@ def load_owid_df():
     owid_df = pd.read_csv(url, parse_dates=['date'])
     # only keep data after Dec 2019
     owid_df = owid_df[owid_df['date']>='2019-12-01']
+    
+    # replace 'United States' string with 'USA' in location, to match GISAID country name
+    owid_df.loc[owid_df[owid_df['location'] == 'United States'].index, 'location'] = 'USA'
+    
     # subset of columns, prepend 'owid_' to each column name
     owid_cols = ['date','location','iso_code','new_cases','new_cases_smoothed','population']
     owid_df = owid_df[owid_cols]
     owid_df.columns = ['owid_%s' % x for x in owid_df.columns]
     return owid_df
+
 
 ##############################################################################################
 ##################################      Merge and pivot data   ###############################
@@ -165,18 +172,25 @@ def merge_gisaid_owid(country_variants_df, owid_df):
 
     # TODO: I'm not sure about this... Why say "All lineages" instead of "Other" here?
     merged_df['key_lineages'] = merged_df['key_lineages'].fillna('All lineages')
+    
+    # copy missing values from OWID data to GISAID columns as necessary (GISAID will lag)
+    merged_df['collect_date']= np.where(
+        merged_df['collect_date'].isnull(), merged_df['owid_date'], merged_df['collect_date'])
+    merged_df['country']= np.where(
+        merged_df['country'].isnull(), merged_df['owid_location'], merged_df['country'])
+    
     return merged_df
 
 
-def pivot_merged_df(country_variants_df):
-    country_variants_pivot = country_variants_df.pivot_table(
+def pivot_merged_df(merged_df):
+    country_variants_pivot = merged_df.pivot_table(
         values=['accession_id'], aggfunc='sum', dropna=False, index=['owid_date','owid_location'],
         columns=['key_lineages']).droplevel(axis=1, level=0).reset_index()
 
     cols = ['country', 'region', 'collect_date', 'owid_new_cases', 'owid_new_cases_smoothed',
             'owid_population']
-    country_variants_all_lineages = country_variants_df[
-        country_variants_df['key_lineages']=='All lineages'][cols]
+    country_variants_all_lineages = merged_df[
+        merged_df['key_lineages'] == 'All lineages'][cols]
     country_variants_pivot = pd.merge(
         country_variants_pivot, country_variants_all_lineages, 
         how='outer',
@@ -213,9 +227,10 @@ def main(args_list=None):
     merged_pivoted_df = pivot_merged_df(merged_df)
     print('Done.')
 
-    filedate_dt = datetime(year=2021, month=4, day=26)
-    merged_pivoted_df[(merged_pivoted_df['owid_date']<=filedate_dt)].to_csv(
-        args.merged_gisaid_owid_out)
+    # only output dates up until the latest GISAID available (collection dates will lag a few days)
+    max_gisaid_date = gisaid_country_variants_df.collect_date.max()
+    merged_pivoted_df_latest = merged_pivoted_df.loc[merged_pivoted_df.owid_date <= max_gisaid_date]
+    merged_pivoted_df_latest.to_csv(args.merged_gisaid_owid_out)
     print('Wrote output to %s' % args.merged_gisaid_owid_out)
 
 
