@@ -13,7 +13,8 @@ Filters for future consideration (not doing these yet):
     - excluding sequences with greater than 5% ambiguous base calls (N)
 """
 
-from datetime import date
+import datetime
+from datetime import date, timedelta
 import sys
 
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
@@ -67,7 +68,7 @@ def filter_gisaid_sequences(gisaid_df):
     # full date string, between Dec 2019 and today (no future samples allowed)
     def is_legit_date(collection_date):
         return len(collection_date) == 10 and \
-            collection_date > '2019-12-01' and collection_date < today_str
+            collection_date > '2019-12-01' and collection_date <= today_str
     gisaid_df = gisaid_df[gisaid_df['Collection date'].apply(is_legit_date)]
 
     gisaid_df = gisaid_df.loc[
@@ -80,6 +81,9 @@ def filter_gisaid_sequences(gisaid_df):
     gisaid_df = filter_nextstrain_exclude_sequences(gisaid_df)
     return gisaid_df
 
+def get_weekstartdate(dt_value):
+    start = dt_value - timedelta(days=dt_value.weekday())
+    return start
 
 def annotate_sequences(gisaid_df):
     gisaid_df['region'] = gisaid_df.Location.apply(lambda x: x.split('/')[0].strip())
@@ -87,19 +91,22 @@ def annotate_sequences(gisaid_df):
     gisaid_df['division'] = gisaid_df.Location.apply(
         lambda x: x.split('/')[2].strip() if len(x.split('/'))>2 else '')
 
+    # replace 'USA' string with 'United States' etc in location, to match OWID location name
+    gisaid_df.loc[gisaid_df[gisaid_df['country'] == 'USA'].index, 'country'] = 'United States'
+    gisaid_df.loc[gisaid_df[gisaid_df['country'] == 'Czech Republic'].index, 'country'] = 'Czechia'
+
     gisaid_df['collect_date'] = pd.to_datetime(gisaid_df['Collection date'])
     gisaid_df['submit_date'] = pd.to_datetime(gisaid_df['Submission date'])
 
     gisaid_df['lag_days'] = gisaid_df['submit_date'] - gisaid_df['collect_date']
     gisaid_df['lag_days'] = gisaid_df['lag_days'].dt.days.astype('int')
 
-    gisaid_df['collect_week'] = gisaid_df['collect_date'].dt.isocalendar().week
-    gisaid_df['submit_week'] = gisaid_df['submit_date'].dt.isocalendar().week
-    gisaid_df['collect_week'] = gisaid_df['collect_week'].astype('int')
-    gisaid_df['submit_week'] = gisaid_df['submit_week'].astype('int')
+    # using ISO 8601 year and week (Monday as the first day of the week. Week 01 is the week containing Jan 4)
+    gisaid_df['collect_yearweek'] = gisaid_df['collect_date'].apply(lambda x: datetime.datetime.strftime(x, "%G-W%V"))
+    gisaid_df['submit_yearweek'] = gisaid_df['submit_date'].apply(lambda x: datetime.datetime.strftime(x, "%G-W%V"))
 
-    gisaid_df['collect_year'] = gisaid_df['collect_date'].dt.isocalendar().year
-    gisaid_df['submit_year'] = gisaid_df['submit_date'].dt.isocalendar().year
+    gisaid_df['collect_weekstartdate'] = gisaid_df['collect_date'].apply(get_weekstartdate)
+    gisaid_df['submit_weekstartdate'] = gisaid_df['submit_date'].apply(get_weekstartdate)
 
     return gisaid_df
 
@@ -107,7 +114,9 @@ def annotate_sequences(gisaid_df):
 def subset_gisaid_df(gisaid_df):
     cols = ['Collection date','Accession ID','Pango lineage',
             'Location','region','country','division',
-            'collect_date', 'submit_date','lag_days','submit_week','collect_week']
+            'collect_date', 'submit_date', 'lag_days',
+            'collect_yearweek','collect_weekstartdate',
+            'submit_yearweek','submit_weekstartdate']
     return gisaid_df[cols]
 
 
@@ -121,20 +130,21 @@ def load_and_filter_gisaid_df(args):
 
 def aggregate_with_lineage(gisaid_df):
     country_variants_df = gisaid_df.groupby(
-        ['collect_date','country','region','Pango lineage']).count()[['Accession ID']].reset_index()
-    all_sequences = gisaid_df.groupby(
-        ['collect_date','country','region']).count()[['Accession ID']].reset_index()
-    all_sequences['Pango lineage'] = 'All lineages'
-    country_variants_df = pd.concat([country_variants_df, all_sequences])
-
+        ['collect_date','collect_yearweek','collect_weekstartdate','country','Pango lineage']).count()[['Accession ID']].reset_index()
+    
     # TODO: do lineage assignment differently
     vocs = ['B.1.1.7', 'B.1.429', 'B.1.427', 'P.1', 'B.1.351']
     vois = ['B.1.526', 'B.1.526.1', 'B.1.526.2', 'B.1.525', 'P.2', 'B.1.617']
-    other_important = ['B.1.617.1', 'B.1.617.2', 'B.1.617.3', 'All lineages']
+    other_important = ['B.1.617.1', 'B.1.617.2', 'B.1.617.3']
 
     country_variants_df['key_lineages'] = country_variants_df['Pango lineage'].apply(
         lambda x: x if x in vocs + vois + other_important else 'Other')
-
+    
+    all_sequences = gisaid_df.groupby(
+        ['collect_date','collect_yearweek','collect_weekstartdate','country']).count()[['Accession ID']].reset_index()
+    all_sequences['key_lineages'] = 'All lineages'
+    country_variants_df = pd.concat([country_variants_df, all_sequences])
+ 
     # rename columns a bit
     country_variants_df.columns = ['_'.join(c.lower().split()) for c in country_variants_df.columns]
     return country_variants_df
@@ -148,10 +158,10 @@ def load_owid_df():
     owid_df = pd.read_csv(url, parse_dates=['date'])
     # only keep data after Dec 2019
     owid_df = owid_df[owid_df['date']>='2019-12-01']
-    
-    # replace 'United States' string with 'USA' in location, to match GISAID country name
-    owid_df.loc[owid_df[owid_df['location'] == 'United States'].index, 'location'] = 'USA'
-    
+
+    # drop owid region rows which start with OWID_
+    owid_df = owid_df[~owid_df['iso_code'].str.contains('OWID_')]
+
     # subset of columns, prepend 'owid_' to each column name
     owid_cols = ['date','location','iso_code','new_cases','new_cases_smoothed','population']
     owid_df = owid_df[owid_cols]
@@ -170,12 +180,11 @@ def merge_gisaid_owid(country_variants_df, owid_df):
         right_on=['owid_date', 'owid_location'],
     )
 
-    # TODO: I'm not sure about this... Why say "All lineages" instead of "Other" here?
-    merged_df['key_lineages'] = merged_df['key_lineages'].fillna('All lineages')
-    
-    # copy missing values from OWID data to GISAID columns as necessary (GISAID will lag)
+    # copy missing values from OWID data to GISAID columns and vice versa as necessary (GISAID will lag)
     merged_df['collect_date']= np.where(
         merged_df['collect_date'].isnull(), merged_df['owid_date'], merged_df['collect_date'])
+    merged_df['owid_date']= np.where(
+        merged_df['owid_date'].isnull(), merged_df['collect_date'], merged_df['owid_date'])
     merged_df['country']= np.where(
         merged_df['country'].isnull(), merged_df['owid_location'], merged_df['country'])
     
@@ -183,26 +192,36 @@ def merge_gisaid_owid(country_variants_df, owid_df):
 
 
 def pivot_merged_df(merged_df):
+  # # add a placeholder in order to pivot on key_lineages and not drop empty collect_date rows
+    merged_df['key_lineages'] = merged_df['key_lineages'].fillna('placeholder_dropmeplease')
+    
     country_variants_pivot = merged_df.pivot_table(
-        values=['accession_id'], aggfunc='sum', dropna=False, index=['owid_date','owid_location'],
+        values=['accession_id'], aggfunc='sum', dropna=False, index=['country', 'collect_date',],
         columns=['key_lineages']).droplevel(axis=1, level=0).reset_index()
 
-    cols = ['country', 'region', 'collect_date', 'owid_new_cases', 'owid_new_cases_smoothed',
-            'owid_population']
+    # merge in the owid columns 
+    cols = ['owid_location', 'owid_date', 'owid_new_cases', 'owid_new_cases_smoothed', 'owid_population',
+            'collect_yearweek', 'collect_weekstartdate']
     country_variants_all_lineages = merged_df[
-        merged_df['key_lineages'] == 'All lineages'][cols]
+        merged_df['key_lineages'].isin(['All lineages','placeholder_dropmeplease'])][cols]
     country_variants_pivot = pd.merge(
         country_variants_pivot, country_variants_all_lineages, 
         how='outer',
-        left_on=['owid_location','owid_date'],
-        right_on=['country','collect_date']
-
+        left_on=['country','collect_date'],
+        right_on=['owid_location','owid_date'],
     )
+
     country_variants_pivot.sort_values(
-        ['owid_date','owid_location'], ascending=[False, False], inplace=True)
+        ['owid_date','owid_location'], ascending=[False, True], inplace=True)
+
+    country_variants_pivot.drop('placeholder_dropmeplease', axis=1, inplace=True)
 
     return country_variants_pivot
 
+def add_regions(merged_df, region_path='data/who-regions.csv'):
+    who_regions = pd.read_csv(region_path)
+    merged_df = pd.merge(merged_df, who_regions[['Entity','WHO region']], how='left', left_on=['owid_location'], right_on=['Entity'])
+    return merged_df
 
 def main(args_list=None):
     if args_list is None:
@@ -225,14 +244,15 @@ def main(args_list=None):
     merged_df = merge_gisaid_owid(gisaid_country_variants_df, owid_df)
     print('Pivoting merged data...')
     merged_pivoted_df = pivot_merged_df(merged_df)
+    print('Add WHO regions to countries...')
+    merged_pivoted_df = add_regions(merged_pivoted_df)
     print('Done.')
 
-    # only output dates up until the latest GISAID available (collection dates will lag a few days)
-    max_gisaid_date = gisaid_country_variants_df.collect_date.max()
-    merged_pivoted_df_latest = merged_pivoted_df.loc[merged_pivoted_df.owid_date <= max_gisaid_date]
+    max_gisaid_date = gisaid_df.submit_date.max()
+    merged_pivoted_df_latest = merged_pivoted_df.loc[(merged_pivoted_df.owid_date <= max_gisaid_date)
+                                                      &(merged_pivoted_df.owid_date>='2020-01-01')]
     merged_pivoted_df_latest.to_csv(args.merged_gisaid_owid_out, index=False)
     print('Wrote output to %s' % args.merged_gisaid_owid_out)
-
 
 if __name__ == "__main__":
     main()
