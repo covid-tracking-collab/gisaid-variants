@@ -196,21 +196,36 @@ def pivot_merged_df(merged_df):
     merged_df['key_lineages'] = merged_df['key_lineages'].fillna('placeholder_dropmeplease')
     
     country_variants_pivot = merged_df.pivot_table(
-        values=['accession_id'], aggfunc='sum', dropna=False, index=['country', 'collect_date',],
+        values=['accession_id'], aggfunc='sum', dropna=False, index=['collect_date','country'],
         columns=['key_lineages']).droplevel(axis=1, level=0).reset_index()
 
-    # merge in the owid columns 
-    cols = ['owid_location', 'owid_date', 'owid_new_cases', 'owid_new_cases_smoothed', 'owid_population',
+    # merge in owid cases columns which are date-dependent
+    cols = ['owid_location', 'owid_date', 'owid_new_cases', 'owid_new_cases_smoothed',
             'collect_yearweek', 'collect_weekstartdate']
     country_variants_all_lineages = merged_df[
         merged_df['key_lineages'].isin(['All lineages','placeholder_dropmeplease'])][cols]
     country_variants_pivot = pd.merge(
         country_variants_pivot, country_variants_all_lineages, 
-        how='outer',
+        how='left',
         left_on=['country','collect_date'],
         right_on=['owid_location','owid_date'],
     )
 
+    # merge in owid population regardless of date
+    country_variants_pivot = pd.merge(
+        country_variants_pivot, 
+        merged_df[merged_df['key_lineages'].isin(['All lineages','placeholder_dropmeplease'])][['owid_location', 'owid_population']].drop_duplicates(),
+        how='left',
+        left_on=['country'],
+        right_on=['owid_location'],
+        suffixes=('_drop',''),
+    )
+    # drop the original owid_location col which is sparser across the timeseries
+    country_variants_pivot.drop('owid_location_drop', axis=1, inplace=True)
+
+    # copy over collect_date where owid_date is missing, otherwise owid_date is NaT which gets filtered out
+    country_variants_pivot['owid_date']= np.where(
+        country_variants_pivot['owid_date'].isnull(), country_variants_pivot['collect_date'], country_variants_pivot['owid_date'])
     country_variants_pivot.sort_values(
         ['owid_date','owid_location'], ascending=[False, True], inplace=True)
 
@@ -249,8 +264,7 @@ def main(args_list=None):
     print('Done.')
 
     max_gisaid_date = gisaid_df.submit_date.max()
-    merged_pivoted_df_latest = merged_pivoted_df.loc[(merged_pivoted_df.owid_date <= max_gisaid_date)
-                                                      &(merged_pivoted_df.owid_date>='2020-01-01')]
+    merged_pivoted_df_latest = merged_pivoted_df.loc[(merged_pivoted_df.owid_date <= max_gisaid_date)]
     merged_pivoted_df_latest.to_csv(args.merged_gisaid_owid_out, index=False)
     print('Wrote output to %s' % args.merged_gisaid_owid_out)
 
