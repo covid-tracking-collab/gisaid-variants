@@ -236,6 +236,14 @@ def pivot_merged_df(merged_df):
 def add_regions(merged_df, region_path='data/who-regions.csv'):
     who_regions = pd.read_csv(region_path)
     merged_df = pd.merge(merged_df, who_regions[['Entity','WHO region']], how='left', left_on=['owid_location'], right_on=['Entity'])
+    merged_df.rename(columns={'WHO region': 'who_region'}, inplace=True)
+    merged_df.drop('Entity', axis=1, inplace=True)
+    return merged_df
+
+def cleanup_columns(merged_df):
+    # prepend gisaid_ to respective columns except for the lineage ones
+    renamed_cols = {c:'gisaid_'+c for c in merged_df.columns if ('collect' in c) or ('country' in c)}
+    merged_df.rename(columns=renamed_cols, inplace=True)
     return merged_df
 
 def main(args_list=None):
@@ -261,6 +269,8 @@ def main(args_list=None):
     merged_pivoted_df = pivot_merged_df(merged_df)
     print('Add WHO regions to countries...')
     merged_pivoted_df = add_regions(merged_pivoted_df)
+    print('Final data file cleanup...')
+    merged_pivoted_df = cleanup_columns(merged_pivoted_df)
     print('Done.')
 
     max_gisaid_date = gisaid_df.submit_date.max()
