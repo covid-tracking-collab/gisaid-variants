@@ -31,6 +31,9 @@ parser = ArgumentParser(
 parser.add_argument('--gisaid-metadata-file', default='', help='GISAID metadata file export path')
 parser.add_argument('--merged-gisaid-owid-out', default='',
     help='Path where to write merged GISAID/OWID CSV')
+parser.add_argument('--daily-only', action='store_true', default=False,
+                    dest='daily_only',
+                    help='Create only the daily file')
 
 
 ##############################################################################################
@@ -201,7 +204,8 @@ def pivot_merged_df(merged_df):
 
     # merge in owid cases columns which are date-dependent
     cols = ['owid_location', 'owid_date', 'owid_new_cases', 'owid_new_cases_smoothed',
-            'collect_yearweek', 'collect_weekstartdate']
+            # 'collect_yearweek', 'collect_weekstartdate'
+            ]
     country_variants_all_lineages = merged_df[
         merged_df['key_lineages'].isin(['All lineages','placeholder_dropmeplease'])][cols]
     country_variants_pivot = pd.merge(
@@ -229,6 +233,10 @@ def pivot_merged_df(merged_df):
     country_variants_pivot.sort_values(
         ['owid_date','owid_location'], ascending=[False, True], inplace=True)
 
+    # fill out the yearweek and weekstartdate missing value
+    country_variants_pivot['collect_yearweek'] = country_variants_pivot['collect_date'].apply(lambda x: datetime.datetime.strftime(x, "%G-W%V"))
+    country_variants_pivot['collect_weekstartdate'] = country_variants_pivot['collect_date'].apply(get_weekstartdate)
+
     country_variants_pivot.drop('placeholder_dropmeplease', axis=1, inplace=True)
 
     return country_variants_pivot
@@ -240,11 +248,33 @@ def add_regions(merged_df, region_path='data/who-regions.csv'):
     merged_df.drop('Entity', axis=1, inplace=True)
     return merged_df
 
+def add_continents(merged_df, region_path='data/continents-according-to-our-world-in-data.csv'):
+    continents = pd.read_csv(region_path)
+    merged_df = pd.merge(merged_df, continents[['Entity','Continent']], how='left', left_on=['owid_location'], right_on=['Entity'])
+    merged_df.rename(columns={'Continent': 'owid_continent'}, inplace=True)
+    merged_df.drop('Entity', axis=1, inplace=True)
+    return merged_df    
+
 def cleanup_columns(merged_df):
     # prepend gisaid_ to respective columns except for the lineage ones
     renamed_cols = {c:'gisaid_'+c for c in merged_df.columns if ('collect' in c) or ('country' in c)}
     merged_df.rename(columns=renamed_cols, inplace=True)
     return merged_df
+
+def calculate_cols(df):
+    df['sequences_over_new_cases'] = df['All lineages'] / df['owid_new_cases']
+    df.replace(np.inf, np.nan, inplace=True)
+    df['new_cases_per_mil'] = df['owid_new_cases'] / (df['owid_population']/1e6)
+    return df
+
+def aggregate_weekly(df):
+    weekly_agg_df = df.groupby(['gisaid_collect_weekstartdate','gisaid_collect_yearweek','gisaid_country']).sum().reset_index()
+    weekly_agg_df.drop(['owid_population','owid_new_cases_smoothed'], axis=1, inplace=True)
+    weekly_agg_df = pd.merge(weekly_agg_df, df[['owid_location','owid_population','who_region','owid_continent']].drop_duplicates(), 
+                            how='left', left_on=['gisaid_country'], right_on=['owid_location'])
+    weekly_agg_df = calculate_cols(weekly_agg_df)
+    return weekly_agg_df
+
 
 def main(args_list=None):
     if args_list is None:
@@ -267,8 +297,9 @@ def main(args_list=None):
     merged_df = merge_gisaid_owid(gisaid_country_variants_df, owid_df)
     print('Pivoting merged data...')
     merged_pivoted_df = pivot_merged_df(merged_df)
-    print('Add WHO regions to countries...')
+    print('Add region assignments to countries...')
     merged_pivoted_df = add_regions(merged_pivoted_df)
+    merged_pivoted_df = add_continents(merged_pivoted_df)
     print('Final data file cleanup...')
     merged_pivoted_df = cleanup_columns(merged_pivoted_df)
     print('Done.')
@@ -277,6 +308,10 @@ def main(args_list=None):
     merged_pivoted_df_latest = merged_pivoted_df.loc[(merged_pivoted_df.owid_date <= max_gisaid_date)]
     merged_pivoted_df_latest.to_csv(args.merged_gisaid_owid_out, index=False)
     print('Wrote output to %s' % args.merged_gisaid_owid_out)
+
+    if not args.daily_only:
+        aggregate_weekly(merged_pivoted_df_latest).to_csv(args.merged_gisaid_owid_out.split('.')[0]+'_weekly.csv', index=False)
+        print('Also created weekly aggregate file')
 
 if __name__ == "__main__":
     main()
