@@ -31,9 +31,9 @@ parser = ArgumentParser(
 parser.add_argument('--gisaid-metadata-file', default='', help='GISAID metadata file export path')
 parser.add_argument('--merged-gisaid-owid-out', default='',
     help='Path where to write merged GISAID/OWID CSV')
-parser.add_argument('--daily-only', action='store_true', default=False,
-                    dest='daily_only',
-                    help='Create only the daily file')
+parser.add_argument('--make-weekly-file', action='store_true', default=False,
+                    dest='make_weekly',
+                    help='Create weekly file with _weekly appended to filename. Daily file is created regardless.')
 
 
 ##############################################################################################
@@ -203,9 +203,7 @@ def pivot_merged_df(merged_df):
         columns=['key_lineages']).droplevel(axis=1, level=0).reset_index()
 
     # merge in owid cases columns which are date-dependent
-    cols = ['owid_location', 'owid_date', 'owid_new_cases', 'owid_new_cases_smoothed',
-            # 'collect_yearweek', 'collect_weekstartdate'
-            ]
+    cols = ['owid_location', 'owid_date', 'owid_new_cases', 'owid_new_cases_smoothed',]
     country_variants_all_lineages = merged_df[
         merged_df['key_lineages'].isin(['All lineages','placeholder_dropmeplease'])][cols]
     country_variants_pivot = pd.merge(
@@ -309,7 +307,7 @@ def main(args_list=None):
     merged_pivoted_df_latest.to_csv(args.merged_gisaid_owid_out, index=False)
     print('Wrote output to %s' % args.merged_gisaid_owid_out)
 
-    if not args.daily_only:
+    if args.make_weekly:
         aggregate_weekly(merged_pivoted_df_latest).to_csv(args.merged_gisaid_owid_out.split('.')[0]+'_weekly.csv', index=False)
         print('Also created weekly aggregate file')
 
