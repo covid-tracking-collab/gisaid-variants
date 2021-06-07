@@ -266,6 +266,20 @@ def add_continents(merged_df, region_path='data/continents-according-to-our-worl
     merged_df.drop('Entity', axis=1, inplace=True)
     return merged_df    
 
+def concat_agglocations(merged_pivoted_df, group_cols=['collect_date','collect_yearweek','collect_weekstartdate','owid_date']):
+    continents_df = merged_pivoted_df.groupby(group_cols+['owid_continent']).sum().reset_index()
+    whoregions_df = merged_pivoted_df.groupby(group_cols+['who_region']).sum().reset_index()
+    global_df = merged_pivoted_df.groupby(group_cols).sum().reset_index()
+    
+    # create new col to distinguish these from country-level rows
+    continents_df.loc[:,'aggregate_location'] = continents_df['owid_continent']
+    whoregions_df.loc[:,'aggregate_location'] = 'WHO Region: ' + whoregions_df['who_region']
+    global_df.loc[:,'aggregate_location'] = 'Global'
+    
+    agglocation_df = pd.concat([continents_df, whoregions_df, global_df], sort=False)
+
+    return pd.concat([merged_pivoted_df, agglocation_df], sort=False)
+
 def cleanup_columns(merged_df):
     # prepend gisaid_ to respective columns except for the lineage ones
     renamed_cols = {c:'gisaid_'+c for c in merged_df.columns if ('collect' in c) or ('country' in c) or ('lagdays' in c)}
@@ -284,6 +298,7 @@ def aggregate_weekly(df):
     weekly_agg_df.drop(['owid_population','owid_new_cases_smoothed'], axis=1, inplace=True)
     weekly_agg_df = pd.merge(weekly_agg_df, df[['owid_location','owid_population','who_region','owid_continent']].drop_duplicates(), 
                             how='left', left_on=['gisaid_country'], right_on=['owid_location'])
+    weekly_agg_df = concat_agglocations(weekly_agg_df, group_cols=['gisaid_collect_weekstartdate','gisaid_collect_yearweek'])
     return weekly_agg_df
 
 
@@ -311,6 +326,8 @@ def main(args_list=None):
     print('Add region assignments to countries...')
     merged_pivoted_df = add_regions(merged_pivoted_df)
     merged_pivoted_df = add_continents(merged_pivoted_df)
+    print('Aggregate locations and concatenate...')
+    merged_pivoted_df = concat_agglocations(merged_pivoted_df)
     print('Add submission lag stats...')
     sumstats_df = calc_lagstats(gisaid_df)  
     merged_pivoted_df = pd.merge(merged_pivoted_df, sumstats_df, how='left')
