@@ -278,7 +278,18 @@ def concat_agglocations(merged_pivoted_df, group_cols=['collect_date','collect_y
     
     agglocation_df = pd.concat([continents_df, whoregions_df, global_df], sort=False)
 
-    return pd.concat([merged_pivoted_df, agglocation_df], sort=False)
+    return agglocation_df
+
+def calc_regional_lagstats(gisaid_owid_df, group_cols=['collect_weekstartdate']):
+    continents_sumstats_df = calc_lagstats(gisaid_owid_df, group_cols=group_cols+['owid_continent'])
+    whoregions_sumstats_df = calc_lagstats(gisaid_owid_df, group_cols=group_cols+['who_region'])
+    global_sumstats_df = calc_lagstats(gisaid_owid_df, group_cols=group_cols)
+
+    continents_sumstats_df.loc[:,'aggregate_location'] = continents_sumstats_df['owid_continent']
+    whoregions_sumstats_df.loc[:,'aggregate_location'] = 'WHO Region: '+ whoregions_sumstats_df['who_region']
+    global_sumstats_df.loc[:,'aggregate_location'] = 'Global'
+
+    return pd.concat([whoregions_sumstats_df, continents_sumstats_df, global_sumstats_df], sort=False)
 
 def cleanup_columns(merged_df):
     # prepend gisaid_ to respective columns except for the lineage ones
@@ -298,7 +309,6 @@ def aggregate_weekly(df):
     weekly_agg_df.drop(['owid_population','owid_new_cases_smoothed'], axis=1, inplace=True)
     weekly_agg_df = pd.merge(weekly_agg_df, df[['owid_location','owid_population','who_region','owid_continent']].drop_duplicates(), 
                             how='left', left_on=['gisaid_country'], right_on=['owid_location'])
-    weekly_agg_df = concat_agglocations(weekly_agg_df, group_cols=['gisaid_collect_weekstartdate','gisaid_collect_yearweek'])
     return weekly_agg_df
 
 
@@ -327,7 +337,8 @@ def main(args_list=None):
     merged_pivoted_df = add_regions(merged_pivoted_df)
     merged_pivoted_df = add_continents(merged_pivoted_df)
     print('Aggregate locations and concatenate...')
-    merged_pivoted_df = concat_agglocations(merged_pivoted_df)
+    agglocation_df = concat_agglocations(merged_pivoted_df)
+    merged_pivoted_df = pd.concat([merged_pivoted_df, agglocation_df], sort=False)
     print('Add submission lag stats...')
     sumstats_df = calc_lagstats(gisaid_df)  
     merged_pivoted_df = pd.merge(merged_pivoted_df, sumstats_df, how='left')
@@ -344,10 +355,25 @@ def main(args_list=None):
         print('Also creating weekly aggregate file...')
         weekly_df = aggregate_weekly(merged_pivoted_df_latest)
         weekly_df = calculate_cols(weekly_df)
+        # need to create this df here ahead of calculating country-level lag stats to avoid a join issue with dupe columns later, TODO to rework
+        agglocation_weekly_df = concat_agglocations(weekly_df, group_cols=['gisaid_collect_weekstartdate','gisaid_collect_yearweek'])
+
         print('Calculating weekly lagtime stats...')
         weekly_sumstats_df = calc_lagstats(gisaid_df, group_cols=['collect_weekstartdate','country'])
         weekly_sumstats_df = cleanup_columns(weekly_sumstats_df)
         weekly_df = pd.merge(weekly_df, weekly_sumstats_df, how='left')
+
+        print('Add regional aggregates and calculate weekly regional lagtime stats...')
+        # TODO this is not a good way to do this - temporary quick approach to get some weekly regional lag stats
+        gisaid_owid_df = add_continents(add_regions(merge_gisaid_owid(gisaid_df, owid_df)))
+        regional_sumstats = cleanup_columns(calc_regional_lagstats(gisaid_owid_df))
+        agglocation_weekly_df = pd.merge(agglocation_weekly_df, regional_sumstats, how='left', 
+                                left_on=['aggregate_location','gisaid_collect_weekstartdate'], 
+                                right_on=['aggregate_location','gisaid_collect_weekstartdate'],
+                                suffixes=('','_drop'))
+        agglocation_weekly_df.drop([c for c in agglocation_weekly_df.columns if '_drop' in c], axis=1, inplace=True)
+        weekly_df = pd.concat([weekly_df, agglocation_weekly_df], sort=False)
+
         weekly_df.to_csv(args.merged_gisaid_owid_out.split('.')[0]+'_weekly.csv', index=False)
         print(f"Wrote output to {args.merged_gisaid_owid_out.split('.')[0]+'_weekly.csv'}")
 
