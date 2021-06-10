@@ -22,7 +22,6 @@ import numpy as np
 import pandas as pd
 import requests
 
-
 parser = ArgumentParser(
     description=__doc__,
     formatter_class=RawDescriptionHelpFormatter)
@@ -88,6 +87,11 @@ def get_weekstartdate(dt_value):
     start = dt_value - timedelta(days=dt_value.weekday())
     return start
 
+def correct_location_names(gisaid_df):
+    gisaid_df.loc[gisaid_df['country'] == 'USA'           , 'country'] = 'United States'
+    gisaid_df.loc[gisaid_df['country'] == 'Czech Republic', 'country'] = 'Czechia'
+    return gisaid_df
+
 def annotate_sequences(gisaid_df):
     gisaid_df['region'] = gisaid_df.Location.apply(lambda x: x.split('/')[0].strip())
     gisaid_df['country'] = gisaid_df.Location.apply(lambda x: x.split('/')[1].strip())
@@ -95,8 +99,7 @@ def annotate_sequences(gisaid_df):
         lambda x: x.split('/')[2].strip() if len(x.split('/'))>2 else '')
 
     # replace 'USA' string with 'United States' etc in location, to match OWID location name
-    gisaid_df.loc[gisaid_df[gisaid_df['country'] == 'USA'].index, 'country'] = 'United States'
-    gisaid_df.loc[gisaid_df[gisaid_df['country'] == 'Czech Republic'].index, 'country'] = 'Czechia'
+    gisaid_df = correct_location_names(gisaid_df)
 
     gisaid_df['collect_date'] = pd.to_datetime(gisaid_df['Collection date'])
     gisaid_df['submit_date'] = pd.to_datetime(gisaid_df['Submission date'])
@@ -156,11 +159,11 @@ def calc_lagstats(gisaid_df, group_cols=['collect_date','country']):
     # precalculate summary stats about lag time from date_collect to date_submit for all filtered sequences per day and country
     sumstats_df = gisaid_df.groupby(group_cols).describe()['lag_days'].reset_index()
     sumstats_df.rename(columns={'count':'seq_count',
-                       '50%':'lagdays_median',
-                       '25%':'lagdays_q1',
-                       '75%':'lagdays_q3',
-                       'min':'lagdays_min',
-                       'max':'lagdays_max',
+                       '50%':'gisaid_lagdays_median',
+                       '25%':'gisaid_lagdays_q1',
+                       '75%':'gisaid_lagdays_q3',
+                       'min':'gisaid_lagdays_min',
+                       'max':'gisaid_lagdays_max',
                        }, inplace=True)
     sumstats_df.drop(['seq_count','mean','std'], axis=1, inplace=True)
     return sumstats_df
@@ -242,7 +245,7 @@ def pivot_merged_df(merged_df):
     country_variants_pivot['owid_date']= np.where(
         country_variants_pivot['owid_date'].isnull(), country_variants_pivot['collect_date'], country_variants_pivot['owid_date'])
     country_variants_pivot.sort_values(
-        ['owid_date','owid_location'], ascending=[False, True], inplace=True)
+        ['owid_date','owid_location'], ascending=[True, True], inplace=True)
 
     # fill out the yearweek and weekstartdate missing value
     country_variants_pivot['collect_yearweek'] = country_variants_pivot['collect_date'].apply(lambda x: datetime.datetime.strftime(x, "%G-W%V"))
@@ -291,9 +294,9 @@ def calc_regional_lagstats(gisaid_owid_df, group_cols=['collect_weekstartdate'])
 
     return pd.concat([whoregions_sumstats_df, continents_sumstats_df, global_sumstats_df], sort=False)
 
-def cleanup_columns(merged_df):
+def cleanup_columns(merged_df, gisaid_cols):
     # prepend gisaid_ to respective columns except for the lineage ones
-    renamed_cols = {c:'gisaid_'+c for c in merged_df.columns if ('collect' in c) or ('country' in c) or ('lagdays' in c)}
+    renamed_cols = {c:'gisaid_'+c for c in merged_df.columns if (c in gisaid_cols)}
     merged_df.rename(columns=renamed_cols, inplace=True)
     return merged_df
 
@@ -319,6 +322,7 @@ def main(args_list=None):
 
     print('Loading and filtering GISAID data...')
     gisaid_df = load_and_filter_gisaid_df(args)
+    gisaid_cols = list(gisaid_df.columns)
     print('Done, %d sequences' % gisaid_df.shape[0])
 
     print('Aggregating GISAID data...')
@@ -343,7 +347,7 @@ def main(args_list=None):
     sumstats_df = calc_lagstats(gisaid_df)  
     merged_pivoted_df = pd.merge(merged_pivoted_df, sumstats_df, how='left')
     print('Final data file cleanup...')
-    merged_pivoted_df = cleanup_columns(merged_pivoted_df)
+    merged_pivoted_df = cleanup_columns(merged_pivoted_df, gisaid_cols)
     print('Done.')
 
     max_gisaid_date = gisaid_df.submit_date.max()
@@ -354,26 +358,29 @@ def main(args_list=None):
     if args.make_weekly:
         print('Also creating weekly aggregate file...')
         weekly_df = aggregate_weekly(merged_pivoted_df_latest)
-        weekly_df = calculate_cols(weekly_df)
-        # need to create this df here ahead of calculating country-level lag stats to avoid a join issue with dupe columns later, TODO to rework
-        agglocation_weekly_df = concat_agglocations(weekly_df, group_cols=['gisaid_collect_weekstartdate','gisaid_collect_yearweek'])
-
         print('Calculating weekly lagtime stats...')
         weekly_sumstats_df = calc_lagstats(gisaid_df, group_cols=['collect_weekstartdate','country'])
-        weekly_sumstats_df = cleanup_columns(weekly_sumstats_df)
+        weekly_sumstats_df = cleanup_columns(weekly_sumstats_df, gisaid_cols)
         weekly_df = pd.merge(weekly_df, weekly_sumstats_df, how='left')
 
-        print('Add regional aggregates and calculate weekly regional lagtime stats...')
-        # TODO this is not a good way to do this - temporary quick approach to get some weekly regional lag stats
+        print('Add regional aggregates and calculate weekly regional lagtime stats...')        
+        # TODO to refactor
+        agglocation_weekly_df = concat_agglocations(weekly_df, group_cols=['gisaid_collect_weekstartdate','gisaid_collect_yearweek'])
+        # drop the aggregated lag stats, need to recalc these
+        agglocation_weekly_df.drop([c for c in agglocation_weekly_df.columns if 'lagdays' in c], axis=1, inplace=True)
+        
         gisaid_owid_df = add_continents(add_regions(merge_gisaid_owid(gisaid_df, owid_df)))
-        regional_sumstats = cleanup_columns(calc_regional_lagstats(gisaid_owid_df))
+        regional_sumstats = cleanup_columns(calc_regional_lagstats(gisaid_owid_df), gisaid_cols)
         agglocation_weekly_df = pd.merge(agglocation_weekly_df, regional_sumstats, how='left', 
                                 left_on=['aggregate_location','gisaid_collect_weekstartdate'], 
                                 right_on=['aggregate_location','gisaid_collect_weekstartdate'],
                                 suffixes=('','_drop'))
         agglocation_weekly_df.drop([c for c in agglocation_weekly_df.columns if '_drop' in c], axis=1, inplace=True)
         weekly_df = pd.concat([weekly_df, agglocation_weekly_df], sort=False)
-
+        
+        # precalculate cases per mil and percent sequenced for all rows
+        weekly_df = calculate_cols(weekly_df)
+        
         weekly_df.to_csv(args.merged_gisaid_owid_out.split('.')[0]+'_weekly.csv', index=False)
         print(f"Wrote output to {args.merged_gisaid_owid_out.split('.')[0]+'_weekly.csv'}")
 
