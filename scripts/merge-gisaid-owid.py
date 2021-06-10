@@ -88,8 +88,16 @@ def get_weekstartdate(dt_value):
     return start
 
 def correct_location_names(gisaid_df):
-    gisaid_df.loc[gisaid_df['country'] == 'USA'           , 'country'] = 'United States'
+    gisaid_df.loc[gisaid_df['country'] == 'USA', 'country'] = 'United States'
     gisaid_df.loc[gisaid_df['country'] == 'Czech Republic', 'country'] = 'Czechia'
+    gisaid_df.loc[gisaid_df['country'] == 'Antigua', 'country'] = 'Antigua and Barbuda'
+    gisaid_df.loc[gisaid_df['country'] == 'Democratic Republic of the Congo', 'country'] = 'Democratic Republic of Congo'
+    gisaid_df.loc[gisaid_df['country'] == 'Republic of the Congo', 'country'] = 'Congo'
+    gisaid_df.loc[gisaid_df['country'] == 'Faroe Islands', 'country'] = 'Faeroe Islands'
+    gisaid_df.loc[gisaid_df['country'] == 'Guinea Bissau', 'country'] = 'Guinea-Bissau'
+    gisaid_df.loc[gisaid_df['country'] == 'Niogeria', 'country'] = 'Nigeria'
+    gisaid_df.loc[gisaid_df['country'] == 'mongolia', 'country'] = 'Mongolia'
+    gisaid_df.loc[gisaid_df['country'] == 'morocco', 'country'] = 'Morocco'
     return gisaid_df
 
 def annotate_sequences(gisaid_df):
