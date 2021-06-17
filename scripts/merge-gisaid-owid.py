@@ -88,7 +88,7 @@ def get_weekstartdate(dt_value):
     return start
 
 def correct_location_names(gisaid_df):
-    gisaid_df.loc[gisaid_df['country'] == 'USA', 'country'] = 'United States'
+    gisaid_df.loc[gisaid_df['country'].fillna('').str.contains('USA', case=False), 'country'] = 'United States'
     gisaid_df.loc[gisaid_df['country'] == 'Czech Republic', 'country'] = 'Czechia'
     gisaid_df.loc[gisaid_df['country'] == 'Antigua', 'country'] = 'Antigua and Barbuda'
     gisaid_df.loc[gisaid_df['country'] == 'Democratic Republic of the Congo', 'country'] = 'Democratic Republic of Congo'
@@ -356,6 +356,7 @@ def main(args_list=None):
     merged_pivoted_df = pd.merge(merged_pivoted_df, sumstats_df, how='left')
     print('Final data file cleanup...')
     merged_pivoted_df = cleanup_columns(merged_pivoted_df, gisaid_cols)
+    print(f'Locations without OWID join: {merged_pivoted_df[(merged_pivoted_df["owid_location"].isna())&(merged_pivoted_df["aggregate_location"].isna())].gisaid_country.unique()}')
     print('Done.')
 
     max_gisaid_date = gisaid_df.submit_date.max()
@@ -389,6 +390,13 @@ def main(args_list=None):
         # precalculate cases per mil and percent sequenced for all rows
         weekly_df = calculate_cols(weekly_df)
         
+        # cut off weekly timeseries at most recent completed week of reporting
+        latest_week_numdays = (max_gisaid_date - weekly_df['gisaid_collect_weekstartdate'].max()).days 
+        print(f'Latest GISAID submission date: {max_gisaid_date}, latest week starting Monday: {weekly_df["gisaid_collect_weekstartdate"].max()}')
+        if latest_week_numdays < 6:
+            print('Dropping latest week because of incomplete data')
+            weekly_df = weekly_df.loc[(weekly_df.gisaid_collect_weekstartdate < weekly_df['gisaid_collect_weekstartdate'].max())]
+
         weekly_df.to_csv(args.merged_gisaid_owid_out.split('.')[0]+'_weekly.csv', index=False)
         print(f"Wrote output to {args.merged_gisaid_owid_out.split('.')[0]+'_weekly.csv'}")
 
