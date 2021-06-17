@@ -88,7 +88,7 @@ def get_weekstartdate(dt_value):
     return start
 
 def correct_location_names(gisaid_df):
-    gisaid_df.loc[gisaid_df['country'] == 'USA', 'country'] = 'United States'
+    gisaid_df.loc[gisaid_df['country'].fillna('').str.contains('USA', case=False), 'country'] = 'United States'
     gisaid_df.loc[gisaid_df['country'] == 'Czech Republic', 'country'] = 'Czechia'
     gisaid_df.loc[gisaid_df['country'] == 'Antigua', 'country'] = 'Antigua and Barbuda'
     gisaid_df.loc[gisaid_df['country'] == 'Democratic Republic of the Congo', 'country'] = 'Democratic Republic of Congo'
@@ -186,13 +186,32 @@ def load_owid_df():
     # only keep data after Dec 2019
     owid_df = owid_df[owid_df['date']>='2019-12-01']
 
-    # drop owid region rows which start with OWID_
-    owid_df = owid_df[~owid_df['iso_code'].str.contains('OWID_')]
+    # drop owid region rows which start with OWID_ except specific locations
+    owid_df = owid_df[~owid_df['iso_code'].isin([
+                                                'OWID_AFR', # Africa
+                                                'OWID_ASI', # Asia
+                                                'OWID_EUR', # Europe
+                                                'OWID_EUN', # European Union
+                                                'OWID_INT', # International
+                                                # 'OWID_KOS', # Kosovo
+                                                'OWID_NAM', # North America
+                                                # 'OWID_CYN', # North Cyprus
+                                                'OWID_OCE', # Oceania
+                                                'OWID_SAM', # South America
+                                                'OWID_WRL', # World
+                                                ])]
 
     # subset of columns, prepend 'owid_' to each column name
-    owid_cols = ['date','location','iso_code','new_cases','new_cases_smoothed','population']
+    owid_cols = ['date','location','iso_code','continent','new_cases','new_cases_smoothed','population','people_vaccinated','people_fully_vaccinated']
     owid_df = owid_df[owid_cols]
+    
+    # add vax columns calculating the daily change in people vaccinated to roll up into weekly sums
+    for loc in owid_df.location.unique():
+        owid_df.loc[owid_df['location']==loc,'new_people_vaccinated'] = owid_df[owid_df['location']==loc]['people_vaccinated'].ffill().fillna(0).diff()
+        owid_df.loc[owid_df['location']==loc,'new_people_fully_vaccinated'] = owid_df[owid_df['location']==loc]['people_fully_vaccinated'].ffill().fillna(0).diff()        
+
     owid_df.columns = ['owid_%s' % x for x in owid_df.columns]
+    
     return owid_df
 
 
@@ -227,7 +246,7 @@ def pivot_merged_df(merged_df):
         columns=['key_lineages']).droplevel(axis=1, level=0).reset_index()
 
     # merge in owid cases columns which are date-dependent
-    cols = ['owid_location', 'owid_date', 'owid_new_cases', 'owid_new_cases_smoothed',]
+    cols = ['owid_location', 'owid_date', 'owid_new_cases', 'owid_new_cases_smoothed','owid_new_people_vaccinated','owid_new_people_fully_vaccinated']
     country_variants_all_lineages = merged_df[
         merged_df['key_lineages'].isin(['All lineages','placeholder_dropmeplease'])][cols]
     country_variants_pivot = pd.merge(
@@ -240,7 +259,7 @@ def pivot_merged_df(merged_df):
     # merge in owid population regardless of date
     country_variants_pivot = pd.merge(
         country_variants_pivot, 
-        merged_df[merged_df['key_lineages'].isin(['All lineages','placeholder_dropmeplease'])][['owid_location', 'owid_population']].drop_duplicates(),
+        merged_df[merged_df['key_lineages'].isin(['All lineages','placeholder_dropmeplease'])][['owid_location', 'owid_continent', 'owid_population']].drop_duplicates(),
         how='left',
         left_on=['country'],
         right_on=['owid_location'],
@@ -270,12 +289,12 @@ def add_regions(merged_df, region_path='data/who-regions.csv'):
     merged_df.drop('Entity', axis=1, inplace=True)
     return merged_df
 
-def add_continents(merged_df, region_path='data/continents-according-to-our-world-in-data.csv'):
-    continents = pd.read_csv(region_path)
-    merged_df = pd.merge(merged_df, continents[['Entity','Continent']], how='left', left_on=['owid_location'], right_on=['Entity'])
-    merged_df.rename(columns={'Continent': 'owid_continent'}, inplace=True)
-    merged_df.drop('Entity', axis=1, inplace=True)
-    return merged_df    
+# def add_continents(merged_df, region_path='data/continents-according-to-our-world-in-data.csv'):
+#     continents = pd.read_csv(region_path)
+#     merged_df = pd.merge(merged_df, continents[['Entity','Continent']], how='left', left_on=['owid_location'], right_on=['Entity'])
+#     merged_df.rename(columns={'Continent': 'owid_continent'}, inplace=True)
+#     merged_df.drop('Entity', axis=1, inplace=True)
+#     return merged_df    
 
 def concat_agglocations(merged_pivoted_df, group_cols=['collect_date','collect_yearweek','collect_weekstartdate','owid_date']):
     continents_df = merged_pivoted_df.groupby(group_cols+['owid_continent']).sum().reset_index()
@@ -347,7 +366,7 @@ def main(args_list=None):
     merged_pivoted_df = pivot_merged_df(merged_df)
     print('Add region assignments to countries...')
     merged_pivoted_df = add_regions(merged_pivoted_df)
-    merged_pivoted_df = add_continents(merged_pivoted_df)
+    # merged_pivoted_df = add_continents(merged_pivoted_df)
     print('Aggregate locations and concatenate...')
     agglocation_df = concat_agglocations(merged_pivoted_df)
     merged_pivoted_df = pd.concat([merged_pivoted_df, agglocation_df], sort=False)
@@ -377,7 +396,7 @@ def main(args_list=None):
         # drop the aggregated lag stats, need to recalc these
         agglocation_weekly_df.drop([c for c in agglocation_weekly_df.columns if 'lagdays' in c], axis=1, inplace=True)
         
-        gisaid_owid_df = add_continents(add_regions(merge_gisaid_owid(gisaid_df, owid_df)))
+        gisaid_owid_df = add_regions(merge_gisaid_owid(gisaid_df, owid_df))
         regional_sumstats = cleanup_columns(calc_regional_lagstats(gisaid_owid_df), gisaid_cols)
         agglocation_weekly_df = pd.merge(agglocation_weekly_df, regional_sumstats, how='left', 
                                 left_on=['aggregate_location','gisaid_collect_weekstartdate'], 
