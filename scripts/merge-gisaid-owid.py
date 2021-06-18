@@ -183,6 +183,7 @@ def calc_lagstats(gisaid_df, group_cols=['collect_date','country']):
 def load_owid_df():
     url = 'https://raw.githubusercontent.com/owid/covid-19-data/master/public/data/owid-covid-data.csv'
     owid_df = pd.read_csv(url, parse_dates=['date'])
+    owid_df.sort_values(['location','date'], ascending=True, inplace=True)
     # only keep data after Dec 2019
     owid_df = owid_df[owid_df['date']>='2019-12-01']
 
@@ -289,6 +290,7 @@ def add_regions(merged_df, region_path='data/who-regions.csv'):
     merged_df.drop('Entity', axis=1, inplace=True)
     return merged_df
 
+# OWID dataset already has a continent column so using that instead
 # def add_continents(merged_df, region_path='data/continents-according-to-our-world-in-data.csv'):
 #     continents = pd.read_csv(region_path)
 #     merged_df = pd.merge(merged_df, continents[['Entity','Continent']], how='left', left_on=['owid_location'], right_on=['Entity'])
@@ -326,6 +328,54 @@ def cleanup_columns(merged_df, gisaid_cols):
     renamed_cols = {c:'gisaid_'+c for c in merged_df.columns if (c in gisaid_cols)}
     merged_df.rename(columns=renamed_cols, inplace=True)
     return merged_df
+
+def calc_vax_bottomup(vax_df, loc_col = 'owid_location'):
+    # adding up the daily or weekly new people vaccinated per region and then calculating the percent of pop
+    for loc in vax_df[loc_col].unique():
+      vax_df.loc[vax_df[loc_col]==loc,'owid_people_vaccinated'] = vax_df[vax_df[loc_col]==loc]['owid_new_people_vaccinated'].cumsum()
+      vax_df.loc[vax_df[loc_col]==loc,'owid_people_fully_vaccinated'] = vax_df[vax_df[loc_col]==loc]['owid_new_people_fully_vaccinated'].cumsum()
+    
+    vax_df['owid_people_vaccinated_per_hundred'] = np.round(vax_df['owid_people_vaccinated'] / (vax_df['owid_population']/100),2)
+    vax_df['owid_people_fully_vaccinated_per_hundred'] = np.round(vax_df['owid_people_fully_vaccinated'] / (vax_df['owid_population']/100),2)
+    return vax_df
+
+def get_owid_vax_regional(get_weekly=True):
+    iso2loc_dict = {
+        'OWID_AFR':'Africa',
+        'OWID_ASI':'Asia',
+        'OWID_EUR':'Europe',
+        'OWID_NAM':'North America',
+        'OWID_OCE':'Oceania',
+        'OWID_SAM':'South America',
+        'OWID_WRL':'Global',
+    }
+    owid_url = 'https://raw.githubusercontent.com/owid/covid-19-data/master/public/data/owid-covid-data.csv'
+    owid_vax_df = pd.read_csv(owid_url, parse_dates=['date'])[['iso_code','date','people_vaccinated_per_hundred','people_fully_vaccinated_per_hundred']]
+    owid_vax_df.columns = ['owid_%s' % x for x in owid_vax_df.columns]
+    owid_vax_df['aggregate_location'] = owid_vax_df['owid_iso_code'].map(iso2loc_dict)
+    owid_vax_df['gisaid_collect_weekstartdate'] = owid_vax_df['owid_date'].apply(get_weekstartdate)
+    owid_vax_df.drop('owid_iso_code', axis=1, inplace=True)
+
+    region_vax_df = owid_vax_df[(~owid_vax_df['aggregate_location'].isna())]
+    
+    # only use data from the last day of each week to represent the week's progress
+    if get_weekly: region_vax_df = region_vax_df[(region_vax_df['owid_date'].dt.weekday==6)]
+    
+    return region_vax_df
+
+def overwrite_vax_regional(df):
+    # overwrite these calculated fields at the continent and global level with OWID reported values because of discrepancy vs the bottom-up calcs
+    overwrite_cols = ['owid_people_vaccinated_per_hundred','owid_people_fully_vaccinated_per_hundred']
+    regional_vax_weekly_df = get_owid_vax_regional()
+    overwrite_locations = regional_vax_weekly_df['aggregate_location'].unique()
+    
+    df.loc[df['aggregate_location'].isin(overwrite_locations), overwrite_cols] = np.nan
+    df.set_index(['aggregate_location','gisaid_collect_weekstartdate'], inplace=True)
+    regional_vax_weekly_df.set_index(['aggregate_location','gisaid_collect_weekstartdate'], inplace=True)
+    for col in overwrite_cols: 
+        df[col].update(regional_vax_weekly_df[col])
+    df.reset_index(inplace=True)
+    return df
 
 def calculate_cols(df):
     df['sequences_over_new_cases'] = df['All lineages'] / df['owid_new_cases']
@@ -386,6 +436,7 @@ def main(args_list=None):
     if args.make_weekly:
         print('Also creating weekly aggregate file...')
         weekly_df = aggregate_weekly(merged_pivoted_df_latest)
+        weekly_df = calc_vax_bottomup(weekly_df, loc_col='owid_location')
         print('Calculating weekly lagtime stats...')
         weekly_sumstats_df = calc_lagstats(gisaid_df, group_cols=['collect_weekstartdate','country'])
         weekly_sumstats_df = cleanup_columns(weekly_sumstats_df, gisaid_cols)
@@ -394,6 +445,11 @@ def main(args_list=None):
         print('Add regional aggregates and calculate weekly regional lagtime stats...')        
         # TODO to refactor
         agglocation_weekly_df = concat_agglocations(weekly_df, group_cols=['gisaid_collect_weekstartdate','gisaid_collect_yearweek'])
+        
+        print('Add regional vax data...')
+        agglocation_weekly_df = calc_vax_bottomup(agglocation_weekly_df, loc_col='aggregate_location')
+        agglocation_weekly_df = overwrite_vax_regional(agglocation_weekly_df)
+
         # drop the aggregated lag stats, need to recalc these
         agglocation_weekly_df.drop([c for c in agglocation_weekly_df.columns if 'lagdays' in c], axis=1, inplace=True)
         
@@ -404,17 +460,19 @@ def main(args_list=None):
                                 right_on=['aggregate_location','gisaid_collect_weekstartdate'],
                                 suffixes=('','_drop'))
         agglocation_weekly_df.drop([c for c in agglocation_weekly_df.columns if '_drop' in c], axis=1, inplace=True)
+
         weekly_df = pd.concat([weekly_df, agglocation_weekly_df], sort=False)
         
         # precalculate cases per mil and percent sequenced for all rows
         weekly_df = calculate_cols(weekly_df)
         
         # cut off weekly timeseries at most recent completed week of reporting
-        latest_week_numdays = (max_gisaid_date - weekly_df['gisaid_collect_weekstartdate'].max()).days 
-        print(f'Latest GISAID submission date: {max_gisaid_date}, latest week starting Monday: {weekly_df["gisaid_collect_weekstartdate"].max()}')
+        latest_weekstartdate = weekly_df['gisaid_collect_weekstartdate'].max()
+        latest_week_numdays = (max_gisaid_date - latest_weekstartdate).days 
+        print(f'Latest GISAID submission date: {max_gisaid_date}, latest week starting Monday: {latest_weekstartdate}')
         if latest_week_numdays < 6:
             print('Dropping latest week because of incomplete data')
-            weekly_df = weekly_df.loc[(weekly_df.gisaid_collect_weekstartdate < weekly_df['gisaid_collect_weekstartdate'].max())]
+            weekly_df = weekly_df.loc[(weekly_df.gisaid_collect_weekstartdate < latest_weekstartdate)]
 
         weekly_df.to_csv(args.merged_gisaid_owid_out.split('.')[0]+'_weekly.csv', index=False)
         print(f"Wrote output to {args.merged_gisaid_owid_out.split('.')[0]+'_weekly.csv'}")
