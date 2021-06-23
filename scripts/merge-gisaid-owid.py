@@ -136,6 +136,8 @@ def subset_gisaid_df(gisaid_df):
 
 def load_and_filter_gisaid_df(args):
     gisaid_df = pd.read_csv(args.gisaid_metadata_file, sep='\t')
+    print(f'Top 20 lineages:\n{gisaid_df["Pango lineage"].value_counts()[:20]}')
+    print(f'Latest Pango version: {gisaid_df["Pangolin version"].max()}')
     gisaid_df = filter_gisaid_sequences(gisaid_df)
     gisaid_df = annotate_sequences(gisaid_df)
     gisaid_df = subset_gisaid_df(gisaid_df)
@@ -147,12 +149,17 @@ def aggregate_with_lineage(gisaid_df):
         ['collect_date','collect_yearweek','collect_weekstartdate','country','Pango lineage']).count()[['Accession ID']].reset_index()
     
     # TODO: do lineage assignment differently
-    vocs = ['B.1.1.7', 'B.1.429', 'B.1.427', 'P.1', 'B.1.351']
-    vois = ['B.1.526', 'B.1.526.1', 'B.1.526.2', 'B.1.525', 'P.2', 'B.1.617']
-    other_important = ['B.1.617.1', 'B.1.617.2', 'B.1.617.3']
+    # manually updated these based on the latest pango version 2021-06-15
+    vocs = ['B.1.1.7', 'B.1.427', 'B.1.429', 'B.1.427/429', 'P.1', 'B.1.351', 'B.1.617.2']
+    vois = ['B.1.526', 'B.1.525', 'P.2', 'B.1.617']
+    other_important = ['B.1.617.1', 'B.1.617.3',]
 
     country_variants_df['key_lineages'] = country_variants_df['Pango lineage'].apply(
         lambda x: x if x in vocs + vois + other_important else 'Other')
+    # combine B.1.427 and B.1.429 under B.1.427/429
+    country_variants_df['key_lineages'].replace({'B.1.427':'B.1.427/429',
+                                             'B.1.429':'B.1.427/429',   
+                                            }, inplace=True)
     
     all_sequences = gisaid_df.groupby(
         ['collect_date','collect_yearweek','collect_weekstartdate','country']).count()[['Accession ID']].reset_index()
