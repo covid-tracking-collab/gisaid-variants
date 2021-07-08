@@ -34,6 +34,23 @@ parser.add_argument('--make-weekly-file', action='store_true', default=False,
                     dest='make_weekly',
                     help='Create weekly file with _weekly appended to filename. Daily file is created regardless.')
 
+# TODO: do lineage assignment differently, currently following WHO designations
+# manually updated these based on the latest pango version 2021-06-15
+vocs = ['B.1.1.7', # alpha
+        'B.1.351', 'B.1.351.2', 'B.1.351.3', # beta
+        'P.1', 'P.1.1', 'P.1.2', # gamma
+        'B.1.617.2', 'AY.1','AY.2' # delta
+        ]
+vois = ['B.1.525', # eta
+        'B.1.526', # iota
+        'B.1.617.1', # kappa
+        'C.37', # lambda
+        ]
+other_important = ['B.1.427', 'B.1.429', 'B.1.427/429', # epsilon
+                    'P.2', # zeta
+                    'P.3', # theta
+                    'B.1.617.3' # CDC VOI
+                    ]
 
 ##############################################################################################
 ######################################   GISAID data load    #################################
@@ -87,8 +104,16 @@ def get_weekstartdate(dt_value):
     start = dt_value - timedelta(days=dt_value.weekday())
     return start
 
+def titlecase_location(location_name, exceptions=['and', 'or', 'the', 'a', 'of', 'in', "d'Ivoire"]):
+    word_list = [word if word in exceptions else word.capitalize() for word in location_name.split(' ')]
+    return ' '.join(word_list)
+
 def correct_location_names(gisaid_df):
+    gisaid_df.loc[:,'country'] = gisaid_df['country'].apply(titlecase_location)
     gisaid_df.loc[gisaid_df['country'].fillna('').str.contains('USA', case=False), 'country'] = 'United States'
+    gisaid_df.loc[gisaid_df['country'] == 'Puerto Rico', 'country'] = 'United States'
+    gisaid_df.loc[gisaid_df['country'] == 'Guam', 'country'] = 'United States'
+    gisaid_df.loc[gisaid_df['country'] == 'Northern Mariana Islands', 'country'] = 'United States'
     gisaid_df.loc[gisaid_df['country'] == 'Czech Republic', 'country'] = 'Czechia'
     gisaid_df.loc[gisaid_df['country'] == 'Antigua', 'country'] = 'Antigua and Barbuda'
     gisaid_df.loc[gisaid_df['country'] == 'Democratic Republic of the Congo', 'country'] = 'Democratic Republic of Congo'
@@ -96,8 +121,10 @@ def correct_location_names(gisaid_df):
     gisaid_df.loc[gisaid_df['country'] == 'Faroe Islands', 'country'] = 'Faeroe Islands'
     gisaid_df.loc[gisaid_df['country'] == 'Guinea Bissau', 'country'] = 'Guinea-Bissau'
     gisaid_df.loc[gisaid_df['country'] == 'Niogeria', 'country'] = 'Nigeria'
-    gisaid_df.loc[gisaid_df['country'] == 'mongolia', 'country'] = 'Mongolia'
-    gisaid_df.loc[gisaid_df['country'] == 'morocco', 'country'] = 'Morocco'
+    # gisaid_df.loc[gisaid_df['country'] == 'mongolia', 'country'] = 'Mongolia'
+    # gisaid_df.loc[gisaid_df['country'] == 'morocco', 'country'] = 'Morocco'
+    # gisaid_df.loc[gisaid_df['country'] == 'belgium', 'country'] = 'Belgium'
+    gisaid_df.loc[gisaid_df['country'] == 'Bosni and Herzegovina', 'country'] = 'Bosnia and Herzegovina'
     return gisaid_df
 
 def annotate_sequences(gisaid_df):
@@ -147,15 +174,9 @@ def load_and_filter_gisaid_df(args):
 def aggregate_with_lineage(gisaid_df):
     country_variants_df = gisaid_df.groupby(
         ['collect_date','collect_yearweek','collect_weekstartdate','country','Pango lineage']).count()[['Accession ID']].reset_index()
-    
-    # TODO: do lineage assignment differently
-    # manually updated these based on the latest pango version 2021-06-15
-    vocs = ['B.1.1.7', 'B.1.427', 'B.1.429', 'B.1.427/429', 'P.1', 'B.1.351', 'B.1.617.2']
-    vois = ['B.1.526', 'B.1.525', 'P.2', 'B.1.617']
-    other_important = ['B.1.617.1', 'B.1.617.3',]
 
     country_variants_df['key_lineages'] = country_variants_df['Pango lineage'].apply(
-        lambda x: x if x in vocs + vois + other_important else 'Other')
+        lambda x: x if x in vocs + vois + other_important else 'Other lineages')
     # combine B.1.427 and B.1.429 under B.1.427/429
     country_variants_df['key_lineages'].replace({'B.1.427':'B.1.427/429',
                                              'B.1.429':'B.1.427/429',   
@@ -164,7 +185,7 @@ def aggregate_with_lineage(gisaid_df):
     all_sequences = gisaid_df.groupby(
         ['collect_date','collect_yearweek','collect_weekstartdate','country']).count()[['Accession ID']].reset_index()
     all_sequences['key_lineages'] = 'All lineages'
-    country_variants_df = pd.concat([country_variants_df, all_sequences])
+    country_variants_df = pd.concat([country_variants_df, all_sequences], sort=True)
  
     # rename columns a bit
     country_variants_df.columns = ['_'.join(c.lower().split()) for c in country_variants_df.columns]
@@ -252,6 +273,9 @@ def pivot_merged_df(merged_df):
     country_variants_pivot = merged_df.pivot_table(
         values=['accession_id'], aggfunc='sum', dropna=False, index=['collect_date','country'],
         columns=['key_lineages']).droplevel(axis=1, level=0).reset_index()
+
+    # reorganize col order
+    country_variants_pivot = country_variants_pivot[['collect_date','country','placeholder_dropmeplease','All lineages']+sorted([c for c in country_variants_pivot.columns if '.' in c])+['Other lineages']]
 
     # merge in owid cases columns which are date-dependent
     cols = ['owid_location', 'owid_date', 'owid_new_cases', 'owid_new_cases_smoothed','owid_new_people_vaccinated','owid_new_people_fully_vaccinated']
@@ -398,6 +422,19 @@ def aggregate_weekly(df):
                             how='left', left_on=['gisaid_country'], right_on=['owid_location'])
     return weekly_agg_df
 
+def add_greek_cols(df):
+    # following WHO naming at https://www.who.int/en/activities/tracking-SARS-CoV-2-variants/
+    greek_dict = {
+        'Alpha' : ['B.1.1.7'],
+        'Beta' : ['B.1.351', 'B.1.351.2', 'B.1.351.3'],
+        'Gamma' : ['P.1', 'P.1.1', 'P.1.2'],
+        'Delta' : ['B.1.617.2', 'AY.1','AY.2'],
+        'All VOIs': vois,
+    }
+
+    for k, v in greek_dict.items(): df[k] = df[v].sum(axis=1)
+    df['Other'] = df['All lineages'] - df[[v for v in greek_dict.values() for v in v]].sum(axis=1)
+    return df
 
 def main(args_list=None):
     if args_list is None:
@@ -432,7 +469,7 @@ def main(args_list=None):
     merged_pivoted_df = pd.merge(merged_pivoted_df, sumstats_df, how='left')
     print('Final data file cleanup...')
     merged_pivoted_df = cleanup_columns(merged_pivoted_df, gisaid_cols)
-    print(f'Locations without OWID join: {merged_pivoted_df[(merged_pivoted_df["owid_location"].isna())&(merged_pivoted_df["aggregate_location"].isna())].gisaid_country.unique()}')
+    print(f'Locations without OWID join and how many sequences:\n{merged_pivoted_df[(merged_pivoted_df["owid_location"].isna())&(merged_pivoted_df["aggregate_location"].isna())].groupby("gisaid_country").sum()["All lineages"]}')
     print('Done.')
 
     max_gisaid_date = gisaid_df.submit_date.max()
@@ -473,6 +510,9 @@ def main(args_list=None):
         # precalculate cases per mil and percent sequenced for all rows
         weekly_df = calculate_cols(weekly_df)
         
+        # add cols for each WHO greek-named VOC + "All VOIs" + "Other"
+        weekly_df = add_greek_cols(weekly_df)
+
         # cut off weekly timeseries at most recent completed week of reporting
         latest_weekstartdate = weekly_df['gisaid_collect_weekstartdate'].max()
         latest_week_numdays = (max_gisaid_date - latest_weekstartdate).days 
