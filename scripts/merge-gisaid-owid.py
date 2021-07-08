@@ -425,15 +425,15 @@ def aggregate_weekly(df):
 def add_greek_cols(df):
     # following WHO naming at https://www.who.int/en/activities/tracking-SARS-CoV-2-variants/
     greek_dict = {
-        'Alpha' : ['B.1.1.7'],
-        'Beta' : ['B.1.351', 'B.1.351.2', 'B.1.351.3'],
-        'Gamma' : ['P.1', 'P.1.1', 'P.1.2'],
-        'Delta' : ['B.1.617.2', 'AY.1','AY.2'],
-        'All VOIs': vois,
+        'who_alpha' : ['B.1.1.7'],
+        'who_beta' : ['B.1.351', 'B.1.351.2', 'B.1.351.3'],
+        'who_gamma' : ['P.1', 'P.1.1', 'P.1.2'],
+        'who_delta' : ['B.1.617.2', 'AY.1','AY.2'],
+        'who_allvois': vois,
     }
 
     for k, v in greek_dict.items(): df[k] = df[v].sum(axis=1)
-    df['Other'] = df['All lineages'] - df[[v for v in greek_dict.values() for v in v]].sum(axis=1)
+    df['who_other'] = df['All lineages'] - df[[v for v in greek_dict.values() for v in v]].sum(axis=1)
     return df
 
 def main(args_list=None):
