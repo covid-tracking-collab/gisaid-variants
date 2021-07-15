@@ -40,17 +40,30 @@ parser.add_argument('--save-filtered-metadata', action='store_true', default=Fal
 ##############################################################################################
 ####################   Designate variants for breakout columns    ############################
 ##############################################################################################
+
+# greek naming from WHO at https://www.who.int/en/activities/tracking-SARS-CoV-2-variants/
+# names are created as new cols verbatim in the weeky csv with value being the sum of sequence counts for the pango lineages in each corresponding value plus a 'who_other' column that covers the remaining sequences not designated below
+
+greek_dict = {
+    'who_alpha' :  ['B.1.1.7'],
+    'who_beta' :   ['B.1.351', 'B.1.351.2', 'B.1.351.3'],
+    'who_gamma' :  ['P.1', 'P.1.1', 'P.1.2'],
+    'who_delta' :  ['B.1.617.2', 'AY.1','AY.2'],
+    'who_allvois': ['B.1.525', # eta
+                    'B.1.526', # iota
+                    'B.1.617.1', # kappa
+                    'C.37', # lambda
+                    ],
+}
+
 # every pango lineage in the following lists are broken out as new columns verbatim plus an "All lineages" column as the sum of all sequences and "Other lineages" being "All lineages" minus these designated variant counts
-vocs = ['B.1.1.7', # alpha
-        'B.1.351', 'B.1.351.2', 'B.1.351.3', # beta
-        'P.1', 'P.1.1', 'P.1.2', # gamma
-        'B.1.617.2', 'AY.1','AY.2' # delta
-        ]
-vois = ['B.1.525', # eta
-        'B.1.526', # iota
-        'B.1.617.1', # kappa
-        'C.37', # lambda
-        ]
+vocs = greek_dict['who_alpha']\
+        + greek_dict['who_beta']\
+        + greek_dict['who_gamma']\
+        + greek_dict['who_delta']
+
+vois = greek_dict['who_allvois']
+
 other_important = ['B.1.427', 'B.1.429', 'B.1.427/429', # epsilon
                     'P.2', # zeta
                     'P.3', # theta
@@ -61,21 +74,6 @@ other_important = ['B.1.427', 'B.1.429', 'B.1.427/429', # epsilon
 lineage_replace_dict = {
     'B.1.427':'B.1.427/429',
     'B.1.429':'B.1.427/429',   
-}
-
-# greek naming from WHO at https://www.who.int/en/activities/tracking-SARS-CoV-2-variants/
-# names are created as new cols verbatim in the weeky csv with value being the sum of sequence counts for the pango lineages in each corresponding value plus a 'who_other' column that covers the remaining sequences not designated below
-
-greek_dict = {
-    'who_alpha' : ['B.1.1.7'],
-    'who_beta' : ['B.1.351', 'B.1.351.2', 'B.1.351.3'],
-    'who_gamma' : ['P.1', 'P.1.1', 'P.1.2'],
-    'who_delta' : ['B.1.617.2', 'AY.1','AY.2'],
-    'who_allvois': ['B.1.525', # eta
-                    'B.1.526', # iota
-                    'B.1.617.1', # kappa
-                    'C.37', # lambda
-                    ],
 }
 
 ##############################################################################################
