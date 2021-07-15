@@ -33,9 +33,14 @@ parser.add_argument('--merged-gisaid-owid-out', default='',
 parser.add_argument('--make-weekly-file', action='store_true', default=False,
                     dest='make_weekly',
                     help='Create weekly file with _weekly appended to filename. Daily file is created regardless.')
+parser.add_argument('--save-filtered-metadata', action='store_true', default=False,
+                    dest='save_filtered_local',
+                    help='Save filtered GISAID metadata file in local/metadata_filtered.tsv')
 
-# TODO: do lineage assignment differently, currently following WHO designations
-# manually updated these based on the latest pango version 2021-06-15
+##############################################################################################
+####################   Designate variants for breakout columns    ############################
+##############################################################################################
+# every pango lineage in the following lists are broken out as new columns verbatim plus an "All lineages" column as the sum of all sequences and "Other lineages" being "All lineages" minus these designated variant counts
 vocs = ['B.1.1.7', # alpha
         'B.1.351', 'B.1.351.2', 'B.1.351.3', # beta
         'P.1', 'P.1.1', 'P.1.2', # gamma
@@ -51,6 +56,27 @@ other_important = ['B.1.427', 'B.1.429', 'B.1.427/429', # epsilon
                     'P.3', # theta
                     'B.1.617.3' # CDC VOI
                     ]
+
+# if needed, combine separate lineages under one column. Note that this supersedes the lineage breakout column designations above, i.e. B.1.427 and B.1.429 are collapsed into one column named `B.1.427/429`
+lineage_replace_dict = {
+    'B.1.427':'B.1.427/429',
+    'B.1.429':'B.1.427/429',   
+}
+
+# greek naming from WHO at https://www.who.int/en/activities/tracking-SARS-CoV-2-variants/
+# names are created as new cols verbatim in the weeky csv with value being the sum of sequence counts for the pango lineages in each corresponding value plus a 'who_other' column that covers the remaining sequences not designated below
+
+greek_dict = {
+    'who_alpha' : ['B.1.1.7'],
+    'who_beta' : ['B.1.351', 'B.1.351.2', 'B.1.351.3'],
+    'who_gamma' : ['P.1', 'P.1.1', 'P.1.2'],
+    'who_delta' : ['B.1.617.2', 'AY.1','AY.2'],
+    'who_allvois': ['B.1.525', # eta
+                    'B.1.526', # iota
+                    'B.1.617.1', # kappa
+                    'C.37', # lambda
+                    ],
+}
 
 ##############################################################################################
 ######################################   GISAID data load    #################################
@@ -164,7 +190,7 @@ def subset_gisaid_df(gisaid_df):
 def load_and_filter_gisaid_df(args):
     gisaid_df = pd.read_csv(args.gisaid_metadata_file, sep='\t')
     print(f'Top 20 lineages:\n{gisaid_df["Pango lineage"].value_counts()[:20]}')
-    print(f'Latest Pango version: {gisaid_df["Pangolin version"].max()}')
+    print(f'Pangolin versions present:\n{gisaid_df["Pangolin version"].value_counts(dropna=False)}')
     gisaid_df = filter_gisaid_sequences(gisaid_df)
     gisaid_df = annotate_sequences(gisaid_df)
     gisaid_df = subset_gisaid_df(gisaid_df)
@@ -177,10 +203,8 @@ def aggregate_with_lineage(gisaid_df):
 
     country_variants_df['key_lineages'] = country_variants_df['Pango lineage'].apply(
         lambda x: x if x in vocs + vois + other_important else 'Other lineages')
-    # combine B.1.427 and B.1.429 under B.1.427/429
-    country_variants_df['key_lineages'].replace({'B.1.427':'B.1.427/429',
-                                             'B.1.429':'B.1.427/429',   
-                                            }, inplace=True)
+    # manually combine lineages, i.e. B.1.427 and B.1.429 under B.1.427/429
+    country_variants_df['key_lineages'].replace(lineage_replace_dict, inplace=True)
     
     all_sequences = gisaid_df.groupby(
         ['collect_date','collect_yearweek','collect_weekstartdate','country']).count()[['Accession ID']].reset_index()
@@ -423,15 +447,6 @@ def aggregate_weekly(df):
     return weekly_agg_df
 
 def add_greek_cols(df):
-    # following WHO naming at https://www.who.int/en/activities/tracking-SARS-CoV-2-variants/
-    greek_dict = {
-        'who_alpha' : ['B.1.1.7'],
-        'who_beta' : ['B.1.351', 'B.1.351.2', 'B.1.351.3'],
-        'who_gamma' : ['P.1', 'P.1.1', 'P.1.2'],
-        'who_delta' : ['B.1.617.2', 'AY.1','AY.2'],
-        'who_allvois': vois,
-    }
-
     for k, v in greek_dict.items(): df[k] = df[v].sum(axis=1)
     df['who_other'] = df['All lineages'] - df[[v for v in greek_dict.values() for v in v]].sum(axis=1)
     return df
@@ -447,6 +462,7 @@ def main(args_list=None):
     print('Done, %d sequences' % gisaid_df.shape[0])
 
     print('Aggregating GISAID data...')
+    print('Break out these pango lineages:', vocs+vois+other_important)
     gisaid_country_variants_df = aggregate_with_lineage(gisaid_df)
     print('Done.')
 
@@ -523,6 +539,11 @@ def main(args_list=None):
 
         weekly_df.to_csv(args.merged_gisaid_owid_out.split('.')[0]+'_weekly.csv', index=False)
         print(f"Wrote output to {args.merged_gisaid_owid_out.split('.')[0]+'_weekly.csv'}")
+
+    if args.save_filtered_local:
+        print('Saving filtered GISAID metadata to local/metadata_filtered.tsv...')
+        gisaid_df.to_csv('./local/metadata_filtered.tsv', index=False, sep='\t')
+        print('Done.')
 
 if __name__ == "__main__":
     main()
