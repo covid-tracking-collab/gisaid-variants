@@ -41,7 +41,10 @@ parser.add_argument('--save-filtered-metadata', action='store_true', default=Fal
 ####################   Designate variants for breakout columns    ############################
 ##############################################################################################
 
-# greek naming from WHO at https://www.who.int/en/activities/tracking-SARS-CoV-2-variants/
+# greek naming from WHO (https://www.who.int/en/activities/tracking-SARS-CoV-2-variants/)
+# cross-referencing CDC (https://www.cdc.gov/coronavirus/2019-ncov/variants/variant-info.html) 
+# and Outbreak.info (https://outbreak.info/situation-reports) 
+# and CoVariants.org (https://covariants.org/variants)
 # names are created as new cols verbatim in the weeky csv with value being the sum of sequence counts for the pango lineages in each corresponding value plus a 'who_other' column that covers the remaining sequences not designated below
 
 greek_dict = {
@@ -65,7 +68,7 @@ vois = greek_dict['who_allvois']
 other_important =  ['B.1.617.3', # CDC VUM
                     'B.1.427', 'B.1.429', 'B.1.427/429', # epsilon WHO VUM
                     'B.1.525', # eta WHO VUM
-                    'B.1.526', 'B.1.516.*', # iota WHO VUM
+                    'B.1.526', 'B.1.526.*', # iota WHO VUM
                     'B.1.617.1', # kappa WHO VUM
                     'P.2', # zeta
                     'P.3', # theta
@@ -176,7 +179,6 @@ def annotate_sequences(gisaid_df):
 
     return gisaid_df
 
-
 def subset_gisaid_df(gisaid_df):
     cols = ['Collection date','Accession ID','Pango lineage',
             'Location','region','country','division',
@@ -184,7 +186,6 @@ def subset_gisaid_df(gisaid_df):
             'collect_yearweek','collect_weekstartdate',
             'submit_yearweek','submit_weekstartdate']
     return gisaid_df[cols]
-
 
 def load_and_filter_gisaid_df(args):
     gisaid_df = pd.read_csv(args.gisaid_metadata_file, sep='\t')
@@ -205,7 +206,8 @@ def find_lineages(input_pango, search_pango):
         res = [c for c in set(search_pango) if w.replace('*','') == str(c)[:len(w)-1]]
         print(f'  Found {w}:',sorted(res))
         wildcard_res += res
-    print('  Not found:', set(input_pango)-set(wildcards)-set(match_list))
+    not_found = set(input_pango)-set(wildcards)-set(match_list)
+    if len(not_found)>0: print('  Not found:', not_found)
     return sorted(match_list+wildcard_res)
 
 def aggregate_with_lineage(gisaid_df):
@@ -232,17 +234,6 @@ def calc_lagstats(gisaid_df, group_cols=['collect_date','country']):
     # precalculate summary stats about lag time from date_collect to date_submit for all filtered sequences per day and country
     def q1(x): return x.quantile(0.25)
     def q3(x): return x.quantile(0.75)
-
-    # sumstats_df = gisaid_df.groupby(group_cols).describe()['lag_days'].reset_index()
-    # sumstats_df.rename(columns={'count':'seq_count',
-    #                    '50%':'gisaid_lagdays_median',
-    #                    '25%':'gisaid_lagdays_q1',
-    #                    '75%':'gisaid_lagdays_q3',
-    #                    'min':'gisaid_lagdays_min',
-    #                    'max':'gisaid_lagdays_max',
-    #                    }, inplace=True)
-    # sumstats_df.drop(['seq_count','mean','std'], axis=1, inplace=True)
-
     sumstats_df = gisaid_df.groupby(group_cols).agg({'lag_days':['count','median','min','max',q1,q3]}).reset_index()
     sumstats_df.rename(columns={'count':'seq_count',
                        'median':'gisaid_lagdays_median',
@@ -315,7 +306,6 @@ def merge_gisaid_owid(country_variants_df, owid_df):
         merged_df['country'].isnull(), merged_df['owid_location'], merged_df['country'])
     
     return merged_df
-
 
 def pivot_merged_df(merged_df):
   # # add a placeholder in order to pivot on key_lineages and not drop empty collect_date rows
@@ -475,13 +465,18 @@ def aggregate_weekly(df):
 
 def add_greek_cols(df):
     # break out new columns aggregating the counts of variants grouped under WHO greek letters designated in greek_dict at top
-    match_list = find_lineages([v for v in greek_dict.values() for v in v], set(df.columns))
+    # first find the lineages that exist in this gisaid export
+    greek_lineages_flattened = [v for v in greek_dict.values() for v in v]
+    match_list = find_lineages(greek_lineages_flattened, set(df.columns))
+    
+    # group lineages under each greek letter designation, sum, and create new 'who_' col for them
     print('Grouping into greek cols:','\n--------------------------')
     who_list = []
     for k, v in greek_dict.items(): 
+        print(f'Finding and grouping lineages for {k}:')
         v_existing = find_lineages(v, set(df.columns))
         df[k] = df[v_existing].sum(axis=1)
-        print(k,':',v_existing)
+        print('-->',k,':',v_existing)
         who_list += v_existing
     df['who_other'] = df['All lineages'] - df[match_list].sum(axis=1)
     return df
